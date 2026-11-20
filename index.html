@@ -82,30 +82,34 @@ function checkSaved(){
  });
 }
 function runServer(data){
- return new Promise((resolve,reject)=>{
-   if(!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(APPS_SCRIPT_URL)){
-     reject(new Error('Chưa cấu hình URL Google Apps Script.'));return;
-   }
-   const frame=document.createElement('iframe');frame.name='quiz_receiver_'+Date.now();frame.style.display='none';document.body.appendChild(frame);
-   const form=document.createElement('form');form.method='POST';form.action=APPS_SCRIPT_URL;form.target=frame.name;form.style.display='none';
-   const field=document.createElement('input');field.type='hidden';field.name='payload';field.value=JSON.stringify(data);
-   form.appendChild(field);document.body.appendChild(form);
-   form.submit();
-   form.remove();
-   let attempts=0;
-   const poll=async()=>{
-     attempts++;
-     $('submitStatus').textContent='Đang xác nhận bài đã lưu trên Google Sheets… ('+attempts+'/20)';
-     try{if(await checkSaved()){frame.remove();resolve({ok:true,submissionId:SUBMISSION_ID});return;}}catch(e){}
-     if(attempts>=20){frame.remove();reject(new Error('Chưa xác nhận được sau khoảng 60 giây. Hãy kiểm tra Google Sheets theo mã '+SUBMISSION_ID+' trước khi thử lại.'));return;}
-     setTimeout(poll,2500);
-   };
-   setTimeout(poll,1800);
- });
+  return new Promise((resolve,reject)=>{
+    if(!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(APPS_SCRIPT_URL)){
+      reject(new Error('Chưa cấu hình URL Google Apps Script.'));return;
+    }
+    // Gửi qua iframe ẩn. iframe.onload KHÔNG chứng minh Google Sheets đã lưu.
+    const frame=document.createElement('iframe');frame.name='quiz_receiver_'+Date.now();frame.style.display='none';document.body.appendChild(frame);
+    const form=document.createElement('form');form.method='POST';form.action=APPS_SCRIPT_URL;form.target=frame.name;form.style.display='none';
+    const field=document.createElement('input');field.type='hidden';field.name='payload';field.value=JSON.stringify(data);
+    form.appendChild(field);document.body.appendChild(form);
+    form.submit();form.remove();
+    let attempts=0;
+    const poll=async()=>{
+      attempts++;
+      $('submitStatus').textContent='Đã gửi yêu cầu. Đang kiểm tra kết quả ('+attempts+'/3)…';
+      try{
+        if(await checkSaved()){frame.remove();resolve({ok:true,submissionId:SUBMISSION_ID});return;}
+      }catch(e){}
+      if(attempts>=3){
+        frame.remove();resolve({ok:false,pending:true,submissionId:SUBMISSION_ID});return;
+      }
+      setTimeout(poll,1200);
+    };
+    setTimeout(poll,1200);
+  });
 }
 $('submit').onclick=async()=>{let b=$('submit');b.disabled=true;let missing=QUESTIONS.filter(q=>q.type==='audio'?!audios[q.id]:q.type==='mc'?!Number.isInteger(getA(q.id)):!String(getA(q.id)).trim());if(missing.length&&!confirm(`Còn ${missing.length} câu chưa trả lời. Em vẫn muốn nộp?`)){b.disabled=false;return;}
- $('submitStatus').textContent='Đang chuẩn bị bài...';try{let files=[];for(let q of QUESTIONS.filter(q=>q.type==='audio'&&audios[q.id])){let f=audios[q.id];if(f.size>8*1024*1024)throw Error('Có file ghi âm vượt 8MB: '+q.id);files.push({id:q.id,name:f.name,mime:f.type||'audio/webm',data:await b64(f)});}
- let payload={student:person,klass,code,answers,files,clientScore:verdicts().score,submissionId:SUBMISSION_ID,submissionToken:SUBMISSION_TOKEN};if(DEMO){showResult(false,'BẢN XEM THỬ: Không có dữ liệu nào gửi cho giáo viên.');}else{let response=await runServer(payload);if(!response||!response.ok)throw Error(response?.error||'Không nhận được xác nhận lưu bài.');showResult(true,'Đã ghi bài làm vào hệ thống giáo viên. Mã bài: '+response.submissionId);}}
+ $('submitStatus').textContent='Đang chuẩn bị bài và xử lý file ghi âm…';try{let files=[];for(let q of QUESTIONS.filter(q=>q.type==='audio'&&audios[q.id])){let f=audios[q.id];if(f.size>8*1024*1024)throw Error('Có file ghi âm vượt 8MB: '+q.id);files.push({id:q.id,name:f.name,mime:f.type||'audio/webm',data:await b64(f)});$('submitStatus').textContent='Đang chuẩn bị bản ghi âm '+files.length+'…';}
+ let payload={student:person,klass,code,answers,files,clientScore:verdicts().score,submissionId:SUBMISSION_ID,submissionToken:SUBMISSION_TOKEN};if(DEMO){showResult(false,'BẢN XEM THỬ: Không có dữ liệu nào gửi cho giáo viên.');}else{let response=await runServer(payload);if(response?.ok){showResult(true,'Đã xác nhận lưu bài vào Google Sheets. Mã bài: '+response.submissionId);}else if(response?.pending){showResult(false,'Đã gửi yêu cầu nộp bài nhưng chưa xác nhận được Google Sheets đã lưu. Mã bài: '+response.submissionId+'. Hãy báo mã này cho giáo viên để kiểm tra; không cần nộp lại ngay.');}else{throw Error(response?.error||'Không gửi được yêu cầu nộp bài.');}}}
  catch(err){$('submitStatus').textContent='Chưa gửi được bài: '+err.message+' · Em không nên đóng trang. Hãy thử lại.';b.disabled=false;}};
 function showResult(sent,msg){screens('done');let x=verdicts();$('score').innerHTML=`<div class="metric"><b>${x.score}/${x.max}</b><span>Số câu tự động đúng</span></div><div class="metric"><b>18</b><span>Câu cần giáo viên chấm</span></div><div class="metric"><b>${QUESTIONS.filter(q=>q.type==='audio'&&audios[q.id]).length}/9</b><span>Bản ghi âm</span></div>`;$('sendNotice').textContent=msg+' Điểm 18 câu tự viết/ghi âm chưa được chấm.';let r=$('review');r.innerHTML='';for(let q of QUESTIONS){let div=document.createElement('div');div.className='review';let state=(q.type==='mc'||q.type==='fill')?(points(q)?'✓ Đúng':'✕ Chưa đúng'):'Chờ cô chấm';div.innerHTML=`<strong>${q.id} · ${esc(state)}</strong><p>${esc(q.math||'')} ${esc(q.prompt)}</p>`;if(q.type==='mc'||q.type==='fill'){let chosen=q.type==='mc'?(q.options[getA(q.id)]||'Chưa làm'):getA(q.id);div.innerHTML+=`<p>Trả lời: ${esc(chosen)}</p><p class="good">Gợi ý: ${esc(q.guide)}</p>`;}else{div.innerHTML+=`<p>Câu trả lời: ${esc(getA(q.id)|| (audios[q.id]?'Đã ghi âm':'Chưa nộp'))}</p>`;if(DEMO)div.innerHTML+=`<p class="small"><b>Gợi ý cho giáo viên:</b> ${esc(q.guide)}</p>`;}r.appendChild(div);}}
 $('restart').onclick=()=>location.reload();$('demoBanner').classList.toggle('hidden',!DEMO);
