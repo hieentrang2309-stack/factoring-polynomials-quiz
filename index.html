@@ -66,28 +66,46 @@ function normalize(s){return String(s??'').toLowerCase().normalize('NFKC').repla
 function points(q){if(q.type==='mc')return getA(q.id)===q.answer?1:0;if(q.type==='fill')return [q.answer,...q.aliases].some(a=>normalize(a)===normalize(getA(q.id)))?1:0;return null;}
 function verdicts(){let qs=QUESTIONS.filter(q=>q.type==='mc'||q.type==='fill');return {score:qs.reduce((a,q)=>a+points(q),0),max:qs.length};}
 function b64(file){return new Promise((resolve,reject)=>{let fr=new FileReader();fr.onload=()=>resolve(String(fr.result).split(',')[1]);fr.onerror=reject;fr.readAsDataURL(file);});}
+// Stable submission identity: retrying never creates a second entry.
+const SUBMISSION_ID='Q'+Array.from(crypto.getRandomValues(new Uint8Array(12)),x=>x.toString(16).padStart(2,'0')).join('');
+const SUBMISSION_TOKEN=Array.from(crypto.getRandomValues(new Uint8Array(18)),x=>x.toString(16).padStart(2,'0')).join('');
+function checkSaved(){
+ return new Promise((resolve,reject)=>{
+   const cb='quizStatus_'+Math.random().toString(36).slice(2);
+   const script=document.createElement('script');
+   const timer=setTimeout(()=>{cleanup();reject(new Error('Không kiểm tra được trạng thái lưu bài.'));},12000);
+   function cleanup(){clearTimeout(timer);delete window[cb];script.remove();}
+   window[cb]=result=>{cleanup();resolve(Boolean(result&&result.saved));};
+   script.onerror=()=>{cleanup();reject(new Error('Không kết nối được Google Apps Script.'));};
+   script.src=APPS_SCRIPT_URL+'?action=status&sid='+encodeURIComponent(SUBMISSION_ID)+'&token='+encodeURIComponent(SUBMISSION_TOKEN)+'&callback='+cb+'&t='+Date.now();
+   document.head.appendChild(script);
+ });
+}
 function runServer(data){
  return new Promise((resolve,reject)=>{
-  if (!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(APPS_SCRIPT_URL)){
-    reject(new Error('Giáo viên chưa điền đường dẫn Google Apps Script vào file index.html.')); return;
-  }
-  if(pendingSubmission){reject(new Error('Bài đang được gửi, vui lòng đợi.'));return;}
-  const iframe=document.createElement('iframe');
-  iframe.name='quiz_receiver_'+Date.now();
-  iframe.style.display='none';document.body.appendChild(iframe);
-  const form=document.createElement('form');
-  form.method='POST';form.action=APPS_SCRIPT_URL;form.target=iframe.name;
-  form.style.display='none';
-  const field=document.createElement('input');field.type='hidden';field.name='payload';field.value=JSON.stringify(data);
-  form.appendChild(field);document.body.appendChild(form);
-  const timer=setTimeout(()=>{if(pendingSubmission){pendingSubmission=null;reject(new Error('Chưa nhận được xác nhận từ Google Sheets sau 90 giây. Hãy kiểm tra bảng điểm trước khi thử nộp lại.'));}form.remove();iframe.remove();},90000);
-  pendingSubmission={resolve:v=>{form.remove();iframe.remove();resolve(v)},reject:e=>{form.remove();iframe.remove();reject(e)},timer};
-  form.submit();
+   if(!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(APPS_SCRIPT_URL)){
+     reject(new Error('Chưa cấu hình URL Google Apps Script.'));return;
+   }
+   const frame=document.createElement('iframe');frame.name='quiz_receiver_'+Date.now();frame.style.display='none';document.body.appendChild(frame);
+   const form=document.createElement('form');form.method='POST';form.action=APPS_SCRIPT_URL;form.target=frame.name;form.style.display='none';
+   const field=document.createElement('input');field.type='hidden';field.name='payload';field.value=JSON.stringify(data);
+   form.appendChild(field);document.body.appendChild(form);
+   form.submit();
+   form.remove();
+   let attempts=0;
+   const poll=async()=>{
+     attempts++;
+     $('submitStatus').textContent='Đang xác nhận bài đã lưu trên Google Sheets… ('+attempts+'/20)';
+     try{if(await checkSaved()){frame.remove();resolve({ok:true,submissionId:SUBMISSION_ID});return;}}catch(e){}
+     if(attempts>=20){frame.remove();reject(new Error('Chưa xác nhận được sau khoảng 60 giây. Hãy kiểm tra Google Sheets theo mã '+SUBMISSION_ID+' trước khi thử lại.'));return;}
+     setTimeout(poll,2500);
+   };
+   setTimeout(poll,1800);
  });
 }
 $('submit').onclick=async()=>{let b=$('submit');b.disabled=true;let missing=QUESTIONS.filter(q=>q.type==='audio'?!audios[q.id]:q.type==='mc'?!Number.isInteger(getA(q.id)):!String(getA(q.id)).trim());if(missing.length&&!confirm(`Còn ${missing.length} câu chưa trả lời. Em vẫn muốn nộp?`)){b.disabled=false;return;}
  $('submitStatus').textContent='Đang chuẩn bị bài...';try{let files=[];for(let q of QUESTIONS.filter(q=>q.type==='audio'&&audios[q.id])){let f=audios[q.id];if(f.size>8*1024*1024)throw Error('Có file ghi âm vượt 8MB: '+q.id);files.push({id:q.id,name:f.name,mime:f.type||'audio/webm',data:await b64(f)});}
- let payload={student:person,klass,code,answers,files,clientScore:verdicts().score};if(DEMO){showResult(false,'BẢN XEM THỬ: Không có dữ liệu nào gửi cho giáo viên.');}else{let response=await runServer(payload);if(!response||!response.ok)throw Error(response?.error||'Không nhận được xác nhận lưu bài.');showResult(true,'Đã ghi bài làm vào hệ thống giáo viên. Mã bài: '+response.submissionId);}}
+ let payload={student:person,klass,code,answers,files,clientScore:verdicts().score,submissionId:SUBMISSION_ID,submissionToken:SUBMISSION_TOKEN};if(DEMO){showResult(false,'BẢN XEM THỬ: Không có dữ liệu nào gửi cho giáo viên.');}else{let response=await runServer(payload);if(!response||!response.ok)throw Error(response?.error||'Không nhận được xác nhận lưu bài.');showResult(true,'Đã ghi bài làm vào hệ thống giáo viên. Mã bài: '+response.submissionId);}}
  catch(err){$('submitStatus').textContent='Chưa gửi được bài: '+err.message+' · Em không nên đóng trang. Hãy thử lại.';b.disabled=false;}};
 function showResult(sent,msg){screens('done');let x=verdicts();$('score').innerHTML=`<div class="metric"><b>${x.score}/${x.max}</b><span>Số câu tự động đúng</span></div><div class="metric"><b>18</b><span>Câu cần giáo viên chấm</span></div><div class="metric"><b>${QUESTIONS.filter(q=>q.type==='audio'&&audios[q.id]).length}/9</b><span>Bản ghi âm</span></div>`;$('sendNotice').textContent=msg+' Điểm 18 câu tự viết/ghi âm chưa được chấm.';let r=$('review');r.innerHTML='';for(let q of QUESTIONS){let div=document.createElement('div');div.className='review';let state=(q.type==='mc'||q.type==='fill')?(points(q)?'✓ Đúng':'✕ Chưa đúng'):'Chờ cô chấm';div.innerHTML=`<strong>${q.id} · ${esc(state)}</strong><p>${esc(q.math||'')} ${esc(q.prompt)}</p>`;if(q.type==='mc'||q.type==='fill'){let chosen=q.type==='mc'?(q.options[getA(q.id)]||'Chưa làm'):getA(q.id);div.innerHTML+=`<p>Trả lời: ${esc(chosen)}</p><p class="good">Gợi ý: ${esc(q.guide)}</p>`;}else{div.innerHTML+=`<p>Câu trả lời: ${esc(getA(q.id)|| (audios[q.id]?'Đã ghi âm':'Chưa nộp'))}</p>`;if(DEMO)div.innerHTML+=`<p class="small"><b>Gợi ý cho giáo viên:</b> ${esc(q.guide)}</p>`;}r.appendChild(div);}}
 $('restart').onclick=()=>location.reload();$('demoBanner').classList.toggle('hidden',!DEMO);
