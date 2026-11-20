@@ -16,7 +16,10 @@ let pendingSubmission=null;
 window.addEventListener('message', event => {
   if (!pendingSubmission || !event.data || event.data.channel !== 'factoring36-result') return;
   // Response is sent from Google Apps Script HTML service (googleusercontent.com).
-  if (!/^https:\/\/([a-z0-9-]+\.)?(googleusercontent\.com|google\.com)$/.test(event.origin)) return;
+  if (
+  event.origin !== "https://script.google.com" &&
+  !event.origin.endsWith(".googleusercontent.com")
+) return;
   clearTimeout(pendingSubmission.timer);
   const {resolve,reject}=pendingSubmission; pendingSubmission=null;
   event.data.ok ? resolve(event.data) : reject(new Error(event.data.error || 'Máy chủ không lưu được bài.'));
